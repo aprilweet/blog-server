@@ -14,22 +14,10 @@ def login_required(func):
     @wraps(func)
     def inner(*args, **kwargs):
         print(session)
-        if "session_key" not in session or "open_id" not in session or "app_id" not in session:
+        if "user_id" not in session:
             return "not login", 401
         return func(*args, **kwargs)
 
-    return inner
-
-
-def register_required(func):
-    @wraps(func)
-    def inner(*args, **kwargs):
-        print(session)
-        if "user_id" not in session:
-            return "not register", 401
-        return func(*args, **kwargs)
-
-    inner.func_name = func.func_name
     return inner
 
 
@@ -67,8 +55,88 @@ def make_article(article, abstract, abstract_format, body, body_format):
 api = Blueprint("api", __name__, url_prefix="/api/v1")
 
 
+@api.route("/Login", methods=["GET", "POST"])
+def login():
+    req = request.json if request.is_json else request.args
+
+    code = req.get("code", None) if req else None
+
+    if code:
+        try:
+            ret = requests.get(application.config["CODE_2_SESSION_URL"], params={
+                "appid": application.config["WX_APP_ID"],
+                "secret": application.config["WX_APP_SECRET"],
+                "js_code": code,
+                "grant_type": "authorization_code"
+            }, timeout=2)
+        except Exception as e:
+            print(e)
+            return str(e), 500
+
+        ret = ret.json()
+        if ret.get("errcode", 0) != 0:
+            return ret["errmsg"], 400
+
+        user_id, admin = get_db().register_user(application.config["WX_APP_ID"], ret["openid"])
+
+        session["session_key"] = ret["session_key"]
+        session["app_id"] = application.config["WX_APP_ID"]
+        session["open_id"] = ret["openid"]
+        session["user_id"] = user_id
+        session["admin"] = admin
+    elif "open_id" in session:
+        user_id, admin = get_db().register_user(application.config["WX_APP_ID"], session["open_id"])
+        session["user_id"] = user_id
+        session["admin"] = admin
+    else:
+        return "invalid session", 401
+
+    data = {
+        "userID": user_id,
+        "admin": admin,
+        "readOnly": application.config["READ_ONLY"]
+    }
+    return jsonify(data)
+
+
+@api.route("/Logout", methods=["GET", "POST"])
+@login_required
+def logout():
+    session.clear()
+    return ""
+
+
+@api.route("/UpdateUser", methods=["GET", "POST"])
+@login_required
+def update_user():
+    req = request.json if request.is_json else request.args
+
+    nick_name, avatar_url, gender = (req.get(key, default_value) for key, default_value in (
+        ("nickName", None),
+        ("avatarUrl", None),
+        ("gender", None)))
+
+    get_db().update_user(session["user_id"], nick_name, avatar_url, gender)
+
+    return ""
+
+
+@api.route("/ReportAnalytics", methods=["GET", "POST"])
+@login_required
+def report_analytics():
+    req = request.json if request.is_json else request.args
+
+    event, data = (req.get(key, default_value) for key, default_value in (
+        ("event", None),
+        ("data", None)))
+
+    get_db().add_analytics(event, json.dumps(data, ensure_ascii=False))
+
+    return ""
+
+
 @api.route("/GetArticle", methods=["GET", "POST"])
-@register_required
+@login_required
 def get_article():
     req = request.json if request.is_json else request.args
 
@@ -80,21 +148,20 @@ def get_article():
         ("bodyFormat", None),
         ("sort", "create")))
 
-    article = get_db().get_article(article_id)
-    prev, next = get_db().get_article_siblings(article_id, sort)
+    article = get_db().get_article(article_id, session["admin"])
+    prev, next = get_db().get_article_siblings(article_id, sort, session["admin"])
 
     data = {
         "article": make_article(article, abstract, abstract_format, body, body_format),
+        "visible": article["flag"] == 0,
         "prev": {"articleID": prev["id"], "title": prev["title"]} if prev["id"] else None,
         "next": {"articleID": next["id"], "title": next["title"]} if next["id"] else None
     }
-
-    rsp = {"data": data}
-    return jsonify(rsp)
+    return jsonify(data)
 
 
 @api.route("/GetLatestArticles", methods=["GET", "POST"])
-@register_required
+@login_required
 def get_latest_articles():
     req = request.json if request.is_json else request.args
     reverse, sort, abstract, abstract_format, body, body_format, page, page_size = (req.get(key, default_value) for key, default_value in (
@@ -106,19 +173,18 @@ def get_latest_articles():
         ("bodyFormat", None),
         ("page", 1), ("pageSize", 5)))
 
-    articles = get_db().get_latest_articles(reverse, sort, page, page_size)
-    total = get_db().get_articles_total()
+    articles = get_db().get_latest_articles(reverse, sort, page, page_size, session["admin"])
+    total = get_db().get_articles_total(session["admin"])
 
     data = {
         "articles": [make_article(article, abstract, abstract_format, body, body_format) for article in articles],
         "total": total["total"]
     }
-    rsp = {"data": data}
-    return jsonify(rsp)
+    return jsonify(data)
 
 
 @api.route("/GetLatestComments", methods=["GET", "POST"])
-@register_required
+@login_required
 def get_latest_comments():
     req = request.json if request.is_json else request.args
 
@@ -150,12 +216,11 @@ def get_latest_comments():
     total = get_db().get_comments_total(target, target_id)
 
     data = {"comments": items, "total": total["total"]}
-    rsp = {"data": data}
-    return jsonify(rsp)
+    return jsonify(data)
 
 
 @api.route("/GetLatestLikes", methods=["GET", "POST"])
-@register_required
+@login_required
 def get_latest_likes():
     req = request.json if request.is_json else request.args
 
@@ -200,12 +265,25 @@ def get_latest_likes():
             }
 
     data = {"likes": items, "total": total["total"], "mine": my_like}
-    rsp = {"data": data}
-    return jsonify(rsp)
+    return jsonify(data)
+
+
+@api.route("/ManageArticle", methods=["GET", "POST"])
+@login_required
+def manage_article():
+    req = request.json if request.is_json else request.args
+
+    article_id, visible = (req.get(key, default_value) for key, default_value in (
+        ("articleID", None),
+        ("visible", None)))
+
+    get_db().manage_article(article_id, visible)
+
+    return ""
 
 
 @api.route("/AddComment", methods=["GET", "POST"])
-@register_required
+@login_required
 def add_comment():
     req = request.json if request.is_json else request.args
 
@@ -216,26 +294,24 @@ def add_comment():
 
     comment_id = get_db().add_comment(target, target_id, body, session["user_id"])
     data = {"commentID": comment_id}
-    rsp = {"data": data}
-    return jsonify(rsp)
+    return jsonify(data)
 
 
 @api.route("/DeleteComment", methods=["GET", "POST"])
-@register_required
+@login_required
 def delete_comment():
     req = request.json if request.is_json else request.args
 
     comment_id = req.get("commentID", None)
     count = get_db().delete_comment(comment_id)
     if count == 0:
-        rsp = {"error": "comment {} does not exist.".format(comment_id)}
-        return jsonify(rsp)
+        return "comment {} does not exist.".format(comment_id), 400
     else:
         return ""
 
 
 @api.route("/AddLike", methods=["GET", "POST"])
-@register_required
+@login_required
 def add_like():
     req = request.json if request.is_json else request.args
 
@@ -245,12 +321,11 @@ def add_like():
 
     like_id = get_db().add_like(target, target_id, session["user_id"])
     data = {"likeID": like_id}
-    rsp = {"data": data}
-    return jsonify(rsp)
+    return jsonify(data)
 
 
 @api.route("/DeleteLike", methods=["GET", "POST"])
-@register_required
+@login_required
 def delete_like():
     req = request.json if request.is_json else request.args
 
@@ -258,101 +333,39 @@ def delete_like():
 
     count = get_db().delete_like(like_id)
     if count == 0:
-        rsp = {"error": "like {} does not exist.".format(like_id)}
-        return jsonify(rsp)
+        return "like {} does not exist.".format(like_id), 400
     else:
         return ""
 
 
 @api.route("/AboutMe", methods=["GET", "POST"])
-@register_required
+@login_required
 def about_me():
     req = request.json if request.is_json else request.args
 
-    images, introduction = (req.get(key, default_value) for key, default_value in (
+    images, introduction, links = (req.get(key, default_value) for key, default_value in (
         ("images", True),
-        ("introduction", True)))
+        ("introduction", True),
+        ("links", True)))
 
     data = {}
-    with open("data/about/me.json", "r") as f:
-        me = json.load(f, encoding="UTF-8")
-        if images:
-            data["images"] = me["images"]
-        if introduction:
-            data["introduction"] = me["introduction"]
+    try:
+        with open("data/about/me.json", "r") as f:
+            me = json.load(f, encoding="UTF-8")
+            if images:
+                data["images"] = me["images"]
+            if introduction:
+                data["introduction"] = me["introduction"]
+            if links:
+                data["links"] = me["links"]
+    except Exception as e:
+        print(e)
 
-    rsp = {"data": data}
-    return jsonify(rsp)
-
-
-@api.route("/Login", methods=["GET", "POST"])
-def login():
-    req = request.json if request.is_json else request.args
-
-    code = req.get("code", None)
-
-    ret = requests.get(application.config["CODE_2_SESSION_URL"], params={
-        "appid": application.config["WX_APP_ID"],
-        "secret": application.config["WX_APP_SECRET"],
-        "js_code": code,
-        "grant_type": "authorization_code"
-    }, timeout=2).json()
-
-    print(ret)
-    if ret.get("errcode", 0) != 0:
-        rsp = {"error": ret["errmsg"]}
-        return jsonify(rsp)
-
-    # # test code
-    # ret = {
-    #     "session_key": "mysessionkey",
-    #     "openid": "myopenid"
-    # }
-
-    session["session_key"] = ret["session_key"]
-    session["app_id"] = application.config["WX_APP_ID"]
-    session["open_id"] = ret["openid"]
-
-    return ""
-
-
-@api.route("/Logout", methods=["GET", "POST"])
-@register_required
-def logout():
-    session.clear()
-    return ""
-
-
-@api.route("/Register", methods=["GET", "POST"])
-@login_required
-def register():
-    req = request.json if request.is_json else request.args
-
-    nick_name, avatar_url, gender = (req.get(key, default_value) for key, default_value in (
-        ("nickName", None),
-        ("avatarUrl", None),
-        ("gender", None)))
-
-    user = get_db().register_user(session["app_id"], session["open_id"], nick_name, avatar_url, gender)
-
-    # # test code
-    # user = {
-    #     "id": 1000,
-    #     "admin": 1
-    # }
-
-    session["user_id"] = user["id"]
-
-    data = {
-        "userID": user["id"],
-        "admin": user["admin"] == 1
-    }
-    rsp = {"data": data}
-    return jsonify(rsp)
+    return jsonify(data)
 
 
 @api.route("/GetBooks", methods=["GET", "POST"])
-@register_required
+@login_required
 def get_books():
     req = request.json if request.is_json else request.args
 
@@ -381,12 +394,11 @@ def get_books():
     total = get_db().get_books_total()
 
     data = {"books": items, "total": total["total"]}
-    rsp = {"data": data}
-    return jsonify(rsp)
+    return jsonify(data)
 
 
 @api.route("/GetMovies", methods=["GET", "POST"])
-@register_required
+@login_required
 def get_movies():
     req = request.json if request.is_json else request.args
 
@@ -416,12 +428,11 @@ def get_movies():
     total = get_db().get_movies_total()
 
     data = {"movies": items, "total": total["total"]}
-    rsp = {"data": data}
-    return jsonify(rsp)
+    return jsonify(data)
 
 
 @api.route("/GetTimeline", methods=["GET", "POST"])
-@register_required
+@login_required
 def get_timeline():
     req = request.json if request.is_json else request.args
 
@@ -476,15 +487,14 @@ def get_timeline():
     movies_total = get_db().get_movies_total()
 
     data = {"timeline": items, "total": books_total["total"] + movies_total["total"]}
-    rsp = {"data": data}
-    return jsonify(rsp)
+    return jsonify(data)
 
 
 static = Blueprint("static", __name__, url_prefix="/static")
 
 
 @static.route("/images/<path:path>", methods=["GET"])
-@register_required
+@login_required
 def get_images(path):
     if current_app.use_x_sendfile:
         return current_app.xaccel("images/" + path)

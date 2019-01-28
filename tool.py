@@ -15,14 +15,18 @@ def html_to_markdown(data):
 
 
 def get_article(path, from_format, to_format):
-    f = codecs.open("data/articles/" + path, encoding="utf-8")
-    text = f.read()
-    if from_format == "html" and to_format == "markdown":
-        return html_to_markdown(text), to_format
-    elif from_format == "markdown" and to_format == "html":
-        return markdown_to_html(text), to_format
-    else:
-        return text, from_format
+    try:
+        with codecs.open("data/articles/" + path, encoding="utf-8") as f:
+            text = f.read()
+            if from_format == "html" and to_format == "markdown":
+                return html_to_markdown(text), to_format
+            elif from_format == "markdown" and to_format == "html":
+                return markdown_to_html(text), to_format
+            else:
+                return text, from_format
+    except Exception as e:
+        print(e)
+        return None, None
 
 
 def mm_strip(data):

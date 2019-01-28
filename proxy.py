@@ -25,7 +25,7 @@ def proxy_kuaidaili():
             })
 
         return proxies
-    except Exception, e:
+    except Exception as e:
         print(e)
         return False
 

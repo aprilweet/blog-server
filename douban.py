@@ -33,17 +33,21 @@ def get_by_proxy(url, http_proxies, timeout=3, retry=3, no_proxy=True):
                 continue
             else:
                 return rsp
-        except Exception, e:
+        except Exception as e:
             print(e)
             continue
 
     if no_proxy:
-        rsp = requests.get(url, timeout=timeout)
-        if rsp.status_code != 200:
-            print("get {} error {}".format(url, rsp.status_code))
+        try:
+            rsp = requests.get(url, timeout=timeout)
+            if rsp.status_code != 200:
+                print("get {} error {}".format(url, rsp.status_code))
+                return None
+            else:
+                return rsp
+        except Exception as e:
+            print(e)
             return None
-        else:
-            return rsp
     else:
         return None
 
@@ -130,7 +134,7 @@ if __name__ == "__main__":
         print("Update books page {} ...".format(next))
         books, next = get_books(next, proxies)
         if not books:
-            print("Get books page {} failed".format(next))
+            print("Get books page failed")
             break
 
         db.add_books_half(books)
@@ -148,7 +152,7 @@ if __name__ == "__main__":
             print("Update movies page {} ...".format(next))
             movies, next = get_movies(next, proxies)
             if not movies:
-                print("Get movies page {} failed".format(next))
+                print("Get movies page failed")
                 break
 
             db.add_movies_half(movies)

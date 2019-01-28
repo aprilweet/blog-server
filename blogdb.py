@@ -20,14 +20,17 @@ class BlogDB:
     def __del__(self):
         self.__conn.close()
 
-    def get_article(self, article_id):
-        sql = u"SELECT *,GROUP_CONCAT(tag.tag_name) AS tags FROM article LEFT JOIN tag ON article.id=tag.article_id LEFT JOIN user ON article.user_id=user.id WHERE article.flag=0 AND article.id={} GROUP BY article.id".format(article_id)
+    def get_article(self, article_id, admin):
+        sql = u"SELECT *,GROUP_CONCAT(tag.tag_name) AS tags FROM article LEFT JOIN tag ON article.id=tag.article_id LEFT JOIN user ON article.user_id=user.id WHERE article.flag IN ({flags}) AND article.id={article_id} GROUP BY article.id".format(
+            flags="0,2" if admin else "0",
+            article_id=article_id)
 
         cursor = self.__conn.execute(sql)
         return cursor.fetchone()
 
-    def get_latest_articles(self, reverse, sort, page, page_size):
-        sql = u"SELECT *,GROUP_CONCAT(tag.tag_name) AS tags FROM article LEFT JOIN tag ON article.id=tag.article_id LEFT JOIN user ON article.user_id=user.id WHERE article.flag=0 GROUP BY article.id ORDER BY {field} {is_desc} LIMIT {limit} OFFSET {offset}".format(
+    def get_latest_articles(self, reverse, sort, page, page_size, admin):
+        sql = u"SELECT *,GROUP_CONCAT(tag.tag_name) AS tags FROM article LEFT JOIN tag ON article.id=tag.article_id LEFT JOIN user ON article.user_id=user.id WHERE article.flag IN ({flags}) GROUP BY article.id ORDER BY {field} {is_desc} LIMIT {limit} OFFSET {offset}".format(
+            flags="0,2" if admin else "0",
             field="create_time" if sort == "create" else "update_time",
             is_desc="" if reverse else "DESC",
             limit=page_size,
@@ -37,8 +40,9 @@ class BlogDB:
 
         return cursor.fetchall()
 
-    def get_articles_total(self):
-        sql = u"SELECT COUNT(*) AS total FROM article WHERE flag=0"
+    def get_articles_total(self, admin):
+        sql = u"SELECT COUNT(*) AS total FROM article WHERE flag IN ({flags})".format(
+            flags="0,2" if admin else "0")
 
         cursor = self.__conn.execute(sql)
         return cursor.fetchone()
@@ -56,8 +60,9 @@ class BlogDB:
         cursor = self.__conn.execute(sql)
         return cursor.fetchall()
 
-    def get_article_siblings(self, article_id, sort):
-        sql = u"SELECT MIN({field}),* FROM article WHERE {field} >= (SELECT {field} FROM article WHERE id={article_id} AND flag=0) AND flag=0 AND id!={article_id}".format(
+    def get_article_siblings(self, article_id, sort, admin):
+        sql = u"SELECT MIN({field}),* FROM article WHERE {field} >= (SELECT {field} FROM article WHERE id={article_id} AND flag IN ({flags})) AND flag IN ({flags}) AND id!={article_id}".format(
+            flags="0,2" if admin else "0",
             article_id=article_id,
             field="create_time" if sort == "create" else "update_time"
         )
@@ -65,7 +70,8 @@ class BlogDB:
         cursor = self.__conn.execute(sql)
         next = cursor.fetchone()
 
-        sql = u"SELECT MAX({field}),* FROM article WHERE {field} <= (SELECT {field} FROM article WHERE id={article_id} AND flag=0) AND flag=0 AND id!={article_id}".format(
+        sql = u"SELECT MAX({field}),* FROM article WHERE {field} <= (SELECT {field} FROM article WHERE id={article_id} AND flag IN ({flags})) AND flag IN ({flags}) AND id!={article_id}".format(
+            flags="0,2" if admin else "0",
             article_id=article_id,
             field="create_time" if sort == "create" else "update_time"
         )
@@ -110,6 +116,14 @@ class BlogDB:
         cursor = self.__conn.execute(sql)
         return cursor.fetchone()
 
+    def manage_article(self, article_id, visible):
+        cursor = self.__conn.execute("UPDATE article SET flag=:flag WHERE id=:article_id AND flag!=1", {
+            "flag": 0 if visible else 2,
+            "article_id": article_id})
+
+        self.__conn.commit()
+        return cursor.lastrowid
+
     def add_comment(self, target, target_id, body, user_id):
         cursor = self.__conn.execute("INSERT INTO comment (flag, target, target_id, user_id, body, create_time) VALUES (0,:target,:target_id,:user_id,:body,DATETIME('NOW','LOCALTIME'))", {
             "target": target,
@@ -142,31 +156,29 @@ class BlogDB:
         self.__conn.commit()
         return cursor.rowcount
 
-    def register_user(self, app_id, open_id, nick_name, avatar_url, gender):
+    def register_user(self, app_id, open_id):
         cursor = self.__conn.execute(u"SELECT * FROM user WHERE app_id=:app_id AND open_id=:open_id", {
             "app_id": app_id,
             "open_id": open_id})
         ret = cursor.fetchone()
 
         if ret:
-            self.__conn.execute(u"UPDATE user SET nick_name=:nick_name, avatar_url=:avatar_url, gender=:gender,update_time=DATETIME('NOW','LOCALTIME') WHERE id=:user_id", {
-                "nick_name": nick_name,
-                "avatar_url": avatar_url,
-                "gender": gender,
-                "user_id": ret["id"]})
-            self.__conn.commit()
-            return ret
+            return ret["id"], ret["admin"] == 1
         else:
-            cursor = self.__conn.execute(
-                u"INSERT INTO user (app_id, open_id, nick_name, avatar_url, gender, create_time, update_time) VALUES (:app_id,:open_id,:nick_name,:avatar_url,:gender,DATETIME('NOW','LOCALTIME'),DATETIME('NOW','LOCALTIME'))",
-                {
-                    "app_id": app_id,
-                    "open_id": open_id,
-                    "nick_name": nick_name,
-                    "avatar_url": avatar_url,
-                    "gender": gender})
+            cursor = self.__conn.execute(u"INSERT INTO user (app_id, open_id, create_time) VALUES (:app_id,:open_id,DATETIME('NOW','LOCALTIME'))", {
+                "app_id": app_id,
+                "open_id": open_id})
             self.__conn.commit()
             return cursor.lastrowid, False
+
+    def update_user(self, user_id, nick_name, avatar_url, gender):
+        cursor = self.__conn.execute(u"UPDATE user SET nick_name=:nick_name, avatar_url=:avatar_url, gender=:gender, update_time=DATETIME('NOW','LOCALTIME') WHERE id=:user_id", {
+            "nick_name": nick_name,
+            "avatar_url": avatar_url,
+            "gender": gender,
+            "user_id": user_id})
+        self.__conn.commit()
+        return cursor.lastrowid
 
     def get_books(self, page, page_size):
         sql = u"SELECT * FROM books WHERE flag=0 ORDER BY date DESC LIMIT {limit} OFFSET {offset}".format(
@@ -250,7 +262,7 @@ class BlogDB:
         return cursor.rowcount
 
     def get_timeline(self, page, page_size):
-        sql = u"SELECT link, date, 'book' AS type FROM books UNION SELECT link, date, 'movie' AS type FROM movies ORDER BY date DESC LIMIT {limit} OFFSET {offset}".format(
+        sql = u"SELECT link, date, 'book' AS type FROM books WHERE flag=0 UNION SELECT link, date, 'movie' AS type FROM movies WHERE flag=0 ORDER BY date DESC LIMIT {limit} OFFSET {offset}".format(
             limit=page_size,
             offset=(page - 1) * page_size)
         cursor = self.__conn.execute(sql)
@@ -276,3 +288,11 @@ class BlogDB:
             movies = cursor.fetchall()
 
         return books, movies
+
+    def add_analytics(self, event, data):
+        cursor = self.__conn.execute(u"INSERT INTO analytics (event, data, create_time) VALUES (:event,:data,DATETIME('NOW','LOCALTIME'))", {
+            "event": event,
+            "data": data})
+
+        self.__conn.commit()
+        return cursor.lastrowid
