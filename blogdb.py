@@ -228,6 +228,11 @@ class BlogDB:
         self.__conn.commit()
         return cursor.rowcount
 
+    def add_books_rollback(self):
+        cursor = self.__conn.execute(u"DELETE FROM books WHERE flag=1")
+        self.__conn.commit()
+        return cursor.rowcount
+
     def add_books_confirm(self):
         cursor = self.__conn.execute(u"UPDATE books SET flag=0 WHERE flag=1")
         self.__conn.commit()
@@ -253,6 +258,11 @@ class BlogDB:
                 "date": item["date"]
             } for item in movies])
 
+        self.__conn.commit()
+        return cursor.rowcount
+
+    def add_movies_rollback(self):
+        cursor = self.__conn.execute(u"DELETE FROM movies WHERE flag=1")
         self.__conn.commit()
         return cursor.rowcount
 

@@ -1,5 +1,7 @@
 # coding=utf-8
 
+import socket
+import socks
 import requests
 from bs4 import BeautifulSoup
 from blogdb import BlogDB
@@ -16,30 +18,69 @@ wish = "/people/{account}/wish"
 do = "/people/{account}/do"
 collect = "/people/{account}/collect"
 
+user_agent_list = [
+    "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/22.0.1207.1 Safari/537.1",
+    "Mozilla/5.0 (X11; CrOS i686 2268.111.0) AppleWebKit/536.11 (KHTML, like Gecko) Chrome/20.0.1132.57 Safari/536.11",
+    "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/536.6 (KHTML, like Gecko) Chrome/20.0.1092.0 Safari/536.6",
+    "Mozilla/5.0 (Windows NT 6.2) AppleWebKit/536.6 (KHTML, like Gecko) Chrome/20.0.1090.0 Safari/536.6",
+    "Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/19.77.34.5 Safari/537.1",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/536.5 (KHTML, like Gecko) Chrome/19.0.1084.9 Safari/536.5",
+    "Mozilla/5.0 (Windows NT 6.0) AppleWebKit/536.5 (KHTML, like Gecko) Chrome/19.0.1084.36 Safari/536.5",
+    "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1063.0 Safari/536.3",
+    "Mozilla/5.0 (Windows NT 5.1) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1063.0 Safari/536.3",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_0) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1063.0 Safari/536.3",
+    "Mozilla/5.0 (Windows NT 6.2) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1062.0 Safari/536.3",
+    "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1062.0 Safari/536.3",
+    "Mozilla/5.0 (Windows NT 6.2) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1061.1 Safari/536.3",
+    "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1061.1 Safari/536.3",
+    "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1061.1 Safari/536.3",
+    "Mozilla/5.0 (Windows NT 6.2) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1061.0 Safari/536.3",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/535.24 (KHTML, like Gecko) Chrome/19.0.1055.1 Safari/535.24",
+    "Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/535.24 (KHTML, like Gecko) Chrome/19.0.1055.1 Safari/535.24"
+]
 
-def get_by_proxy(url, http_proxies, timeout=3, retry=3, no_proxy=True):
+
+def get_by_proxy(url, http_proxies, headers=None, timeout=3, retry=3, no_proxy=True):
+    if headers is None:
+        headers = {"User-Agent": random.choice(user_agent_list)}
+    elif "User-Agent" not in headers:
+        headers["User-Agent"] = random.choice(user_agent_list)
+
     for i in range(retry):
+        default_socket = None
         if http_proxies:
-            proxies = {
-                "http": proxy.proxy_to_url(random.choice(http_proxies))
-            }
+            selected = random.choice(http_proxies)
+            if selected["scheme"] == "socks5":
+                proxies = None
+                default_socket = socket.socket
+                socks.set_default_proxy(socks.SOCKS5, selected["ip"], selected["port"])
+                socket.socket = socks.socksocket
+            else:
+                proxies = {
+                    "http": proxy.proxy_to_url(selected),
+                    "https": proxy.proxy_to_url(selected)
+                }
         else:
+            selected = None
             proxies = None
 
         try:
-            rsp = requests.get(url, timeout=timeout, proxies=proxies)
+            rsp = requests.get(url, timeout=timeout, proxies=proxies, headers=headers)
             if rsp.status_code != 200:
-                print("get {} by proxy {} error {}".format(url, proxies, rsp.status_code))
+                print("get {} by proxy {} error {}".format(url, selected, rsp.status_code))
                 continue
             else:
                 return rsp
         except Exception as e:
             print(e)
             continue
+        finally:
+            if default_socket:
+                socket.socket = default_socket
 
     if no_proxy:
         try:
-            rsp = requests.get(url, timeout=timeout)
+            rsp = requests.get(url, timeout=timeout, headers=headers)
             if rsp.status_code != 200:
                 print("get {} error {}".format(url, rsp.status_code))
                 return None
@@ -125,16 +166,19 @@ def get_movies(url, proxies):
 
 
 if __name__ == "__main__":
-    proxies = proxy.proxy_kuaidaili()
+    proxies = proxy.proxy_shadowsocks()
 
     db = BlogDB("data/blog.sqlite")
 
     next = book_url
+    ok = True
+
     while True:
         print("Update books page {} ...".format(next))
         books, next = get_books(next, proxies)
         if not books:
             print("Get books page failed")
+            ok = False
             break
 
         db.add_books_half(books)
@@ -142,10 +186,15 @@ if __name__ == "__main__":
         if next is None:
             break
 
-    db.clear_books()
-    db.add_books_confirm()
-    print("Books updated")
+    if ok:
+        db.clear_books()
+        db.add_books_confirm()
+        print("Books updated")
+    else:
+        db.add_books_rollback()
+        print("Books not updated")
 
+    ok = True
     for state in [wish, do, collect]:
         next = state
         while True:
@@ -153,6 +202,7 @@ if __name__ == "__main__":
             movies, next = get_movies(next, proxies)
             if not movies:
                 print("Get movies page failed")
+                ok = False
                 break
 
             db.add_movies_half(movies)
@@ -160,6 +210,10 @@ if __name__ == "__main__":
             if next is None:
                 break
 
-    db.clear_movies()
-    db.add_movies_confirm()
-    print("Movies updated")
+    if ok:
+        db.clear_movies()
+        db.add_movies_confirm()
+        print("Movies updated")
+    else:
+        db.add_movies_rollback()
+        print("Movies not updated")
